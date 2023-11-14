@@ -29,6 +29,18 @@ For NGROK:
 
 NOTE: Everytime you run ngrok, it will give you a new forwarding link, thus you will have to update the link in the next steps
 
+FOR AWS:
+* Create an account in AWS Console / Use an already existing AWS Account
+* Search for EC2 in the searchbar, and Click on "Launch Instance"
+* Give a name to the Instance, Select Linux as the environment and Launch the instance
+* After a couple of minutes, the instance will be ready and in Running state
+* Click on the instance ID and Click on "Connect" in the top bar
+* In the SSH Client Tab, it provides you with the code that can be used to connect to the instance. Copy and paste the code in your local terminal to connect to the instance
+* Using Git pull, import your codes in the instance storage, and install the libraries to run the server there
+* Once you have the server running, you can access it by using the IPv4 address which is provided in the AWS Console - EC2 Instance Page
+* AWS provides free SSL certificates, which you can use to make your server SSL secured OR You can use Ngrok in AWS instance to have an always running server in the instance
+* If you use the SSL option from AWS, you will need your own domain and have to create Load balancers to redirect the traffic from the EC2 instance through your domain, in a secured manner. The SSL enabled link can then be used in the next steps
+
 ### Setup Whatsapp Integration
 
 * The project used the Whatsapp API provided by Twilio to enable users to interact with the system using Whatsapp
