@@ -4,7 +4,7 @@
 
 ### Install python requirements
 
-####`pip3 -r requirements.txt`
+`pip3 -r requirements.txt`
 
 ### Setup the Database
 
@@ -13,7 +13,7 @@
 
 ### Run the backend
 
-####`python3 backend.py`
+`python3 backend.py`
 
 ### Host the backend
 
