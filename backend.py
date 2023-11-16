@@ -1,8 +1,12 @@
-from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 import os
 import psycopg2
 import datetime
+from dotenv import load_dotenv
+from google.cloud.dialogflowcx_v3beta1.services.agents import AgentsClient
+from google.cloud.dialogflowcx_v3beta1.services.sessions import SessionsClient
+from google.cloud.dialogflowcx_v3beta1.types import session
+from flask import Flask, request, jsonify
 
 # Array of Data to validate the input and responses. This can be added to a SQL Data table and fetched to make it dynamic in nature
 greetingMessages = ['hi', 'hello', 'good morning', 'good afternoon', 'good evening', 'hey']
@@ -62,6 +66,8 @@ eligibilityQuestionIds = [
         "question_prompt": 'What is the duration of the loan that you are looking for? (in Months)'
     }
 ]
+load_dotenv()
+agent = f"projects/{os.getenv('PROJECT_ID')}/locations/{os.getenv('REGION_ID')}/agents/{os.getenv('AGENT_ID')}"
 
 # Initialising the App
 app = Flask(__name__)
@@ -87,6 +93,7 @@ def getConnection():
 def closeConnection(conn):
     conn.commit()
     conn.close()
+    return
 
 # Function to get data from Database
 def getDataFromDB(conn, query):
@@ -245,149 +252,29 @@ def whatsappBot():
     date_time = datetime.datetime.now()
     # Initialising input values END
 
-    # Checking Previous Sessions START
-    active_session = getDataFromDB(conn, "SELECT * FROM active_sessions WHERE whatsapp_id='"+whatsappId+"'")
-    prev_message = None
-    if(active_session):
-        if(active_session[-2]):
-            prev_message = getDataFromDB(conn, "SELECT * FROM response_collection WHERE session_id='"+active_session[-2]+"'")
-        else:
-            prev_message = getDataFromDB(conn, "SELECT * FROM response_collection WHERE whatsapp_id='"+whatsappId+"' AND final_decision IS NOT NULL ORDER BY end_time DESC")
-    else:
-        prev_message = getDataFromDB(conn, "SELECT * FROM response_collection WHERE whatsapp_id='"+whatsappId+"' AND final_decision IS NOT NULL ORDER BY end_time DESC")
-        addDataToDB(conn, "INSERT INTO active_sessions (whatsapp_id, start_time, update_time) VALUES('"+whatsappId+"', '"+str(date_time)+"', '"+str(date_time)+"')")
-    # Checking Previous Sessions END
+    session_path = f"{agent}/sessions/{whatsappId}"
+    client_options = None
+    agent_components = AgentsClient.parse_agent_path(agent)
+    location_id = agent_components['location']
+    if location_id != "global":
+        api_endpoint = f"{location_id}-dialogflow.googleapis.com:443"
+        client_options = {"api_endpoint": api_endpoint}
+    session_client = SessionsClient(client_options=client_options)
+    text_input = session.TextInput(text=message)
+    query_input = session.QueryInput(text=text_input, language_code='en-us')
+    request1 = session.DetectIntentRequest(
+        session=session_path, query_input=query_input
+    )
+    response = session_client.detect_intent(request=request1)
 
-    # If User sends a greeting Message START
-    if(message in greetingMessages):
-        # If they had previously tried, then sending the last eligibility check value
-        if(prev_message):
-            if(prev_message[-1]):
-                return sendMessage('Hi,\n\nWelcome to Revfin. Your last eligibility check result was: *'+prev_message[-1]+'*.\n\nPlease select one from the following to start a new process:\n1. To check Eligibility for Loan, enter 1 or "Eligibility"\n2. To see FAQs, enter 2 or "FAQs"')
-                
-            elif(active_session):
-                addDataToDB(conn, "INSERT INTO resume_prompted VALUES ('"+whatsappId+"')")
-                return sendMessage('Hi,\n\nWelcome to Revfin. Do you want to resume your eligibility check process? Reply "Yes" to resume')
-            else:
-                return sendMessage('Hi,\n\nWelcome to Revfin. Please select the service you would like to avail today.\n1. To check Eligibility for Loan, enter 1 or "Eligibility"\n2. To see FAQs, enter 2 or "FAQs"')
-        else:
-            return sendMessage('Hi,\n\nWelcome to Revfin. Please select the service you would like to avail today.\n1. To check Eligibility for Loan, enter 1 or "Eligibility"\n2. To see FAQs, enter 2 or "FAQs"')
-    # If User sends a greeting Message END
+    print("=" * 20)
+    print(f"Query text: {response.query_result.text}")
+    response_messages = [
+        " ".join(msg.text.text) for msg in response.query_result.response_messages
+    ]
+    print(f"Response text: {' '.join(response_messages)}\n")
+    return sendMessage(str(''.join(response_messages)))
 
-    # If user sends a confirmation Message START
-    elif((message == 'yes' or message == 'yea' or message == 'y' or 'yes' in message.split(" ")) and (active_session and active_session[-1])):
-        resume_exists = getDataFromDB(conn, "SELECT * FROM resume_prompted WHERE whatsapp_id='"+whatsappId+"'")
-        verify_exists = getDataFromDB(conn, "SELECT * FROM verify_prompted WHERE whatsapp_id='"+whatsappId+"'")
-        if(resume_exists):
-            last_ques_id = active_session[-3]
-            nextResp = getNextMessage(conn, last_ques_id, active_session)
-            deleteDataFromDB(conn, "DELETE FROM resume_prompted WHERE whatsapp_id='"+whatsappId+"'")
-            return sendMessage(nextResp)
-        elif(verify_exists):
-            nextResp = getEligibility(prev_message)
-            sess_id = active_session[-2]
-            date_time = datetime.datetime.now()
-            updateDataInDB(conn, "UPDATE response_collection SET final_decision='"+nextResp+"', update_time= '"+str(date_time)+"', end_time= '"+str(date_time)+"' WHERE session_id='"+sess_id+"'")
-            deleteDataFromDB(conn, "DELETE FROM verify_prompted WHERE whatsapp_id='"+whatsappId+"'")
-            deleteDataFromDB(conn, "DELETE FROM active_sessions WHERE session_id='"+sess_id+"'")
-            final_resp=""
-            if(nextResp=='Eligible'):
-                final_resp = "*Congratulations!!!🥳🥳🥳*\n\nYou are eligible for a loan from us. Kindly visit https://www.revfin.in to get in touch with us and start your journey with Revfin! 🤝"
-            else:
-                final_resp = "We are really sorry, but there's no available offers for your account yet!😔\n\nBut don't lose hope, visit https://www.revfin.in to learn how you can improve your chances of getting a loan and start your journey with Revfin! 👍\n\n\nReply with 'Hi' to start a new process"
-            return sendMessage(final_resp)
-        else:
-            if(active_session):
-                last_ques_id = active_session[-3]
-                resp = ""
-                for i in len(range(eligibilityQuestionIds)):
-                    if(last_ques_id == eligibilityQuestionIds[i]['id']):
-                        resp = eligibilityQuestionIds[i]['correction_prompt']
-                if(not resp):
-                    resp = 'I am sorry, but I am unable to understand the message. Please select one of the following:\n1. To check Eligibility for Loan, enter 1 or "Eligibility"\n2. To see FAQs, enter 2 or "FAQs"'
-                return sendMessage(resp)
-            else:
-                return sendMessage('I am sorry, but I am unable to understand the message. Please select one of the following:\n1. To check Eligibility for Loan, enter 1 or "Eligibility"\n2. To see FAQs, enter 2 or "FAQs"')
-    # If user sends a confirmation Message END
-
-    # If the user sends a Denying message START
-    elif ((message == 'no' or message == 'n' or 'no' in message.split(" ")) and (active_session and active_session[-1])):
-        resume_exists = getDataFromDB(conn, "SELECT * FROM resume_prompted WHERE whatsapp_id='"+whatsappId+"'")
-        verify_exists = getDataFromDB(conn, "SELECT * FROM verify_prompted WHERE whatsapp_id='"+whatsappId+"'")
-        if(resume_exists or verify_exists):
-            deleteDataFromDB(conn, "DELETE FROM resume_prompted WHERE whatsapp_id='"+whatsappId+"'")
-            deleteDataFromDB(conn, "DELETE FROM verify_prompted WHERE whatsapp_id='"+whatsappId+"'")
-            deleteDataFromDB(conn, "DELETE FROM active_sessions WHERE whatsapp_id='"+whatsappId+"'")
-            return sendMessage("No problem! Send 'Hi' to start a new journey!")
-        else:
-            last_ques_id = active_session[-3]
-            resp = ""
-            for i in range(len(eligibilityQuestionIds)):
-                if(last_ques_id == eligibilityQuestionIds[i]['id']):
-                    resp = eligibilityQuestionIds[i]['correction_prompt']
-            if(not resp or resp == ""):
-                resp = 'I am sorry, but I am unable to understand the message. Please select one of the following:\n1. To check Eligibility for Loan, enter 1 or "Eligibility"\n2. To see FAQs, enter 2 or "FAQs"'
-            return sendMessage(resp)
-    # If the user sends a Denying message START
-
-    # If user wants to check eligibility START
-    elif(message in greetingOptions[0] or ('eligible' in message) or ('eligibility' in message) or (active_session and not active_session[-1] and message == str(1))):
-        # Complete process for the user
-        print("HEREEEE")
-        updateDataInDB(conn, "UPDATE active_sessions SET session_type='eligibility' WHERE whatsapp_id='"+whatsappId+"'")
-        date_time = datetime.datetime.now()
-        sess_id = addDataToDBWithReturn(conn, "INSERT INTO response_collection(whatsapp_id, from_account, account_name, start_time, update_time) VALUES('"+whatsappId+"', '"+fromStr+"', '"+account_name+"', '"+str(date_time)+"', '"+str(date_time)+"') RETURNING session_id;")
-        print("Session id: ", sess_id)
-        updateDataInDB(conn, "UPDATE active_sessions SET session_id = '"+sess_id+"' WHERE whatsapp_id='"+whatsappId+"'")
-        active_session = getDataFromDB(conn, "SELECT * FROM active_sessions WHERE session_id='"+sess_id+"'")
-        question = getNextMessage(conn, eligibilityQuestionIds[0]['id'], active_session)
-        return sendMessage(question)
-    # If user wants to check eligibility END
-
-    # If user wants to see FAQs START
-    elif(message in greetingOptions[1] or 'question' in message or 'doubt' in message or (active_session and not active_session[-1] and message == str(2))):
-        # Send list of FAQs to the user
-        updateDataInDB(conn, "UPDATE active_sessions SET session_type='faqs' WHERE whatsapp_id='"+whatsappId+"'")
-        print("Data Updated")
-        return sendMessage('What would you like to know today?\n1. '+faqQuestions[0]+'\n2. '+faqQuestions[1]+'\n3. '+faqQuestions[2]+'\n4. '+faqQuestions[3]+'\n5. '+faqQuestions[4]+'\n6. '+faqQuestions[5]+'\n7. '+faqQuestions[6])
-    # If user wants to see FAQs END
-
-    # If user wants to see a FAQ Answer START
-    elif((active_session and active_session[-1] == 'faqs')):
-        for i in range(len(faqQuestions)):
-            if(message == faqQuestions[i].lower() or message == faqQuestions[i][:-1].lower() or message == str(i+1) or str(i+1) in message):
-                return sendMessage(faqAnswers[i])
-        return sendMessage('This is not a valid FAQ Question. Please select one from the following:\n\n1. '+faqQuestions[0]+'\n2. '+faqQuestions[1]+'\n3. '+faqQuestions[2]+'\n4. '+faqQuestions[3]+'\n5. '+faqQuestions[4]+'\n6. '+faqQuestions[5]+'\n7. '+faqQuestions[6]+'\n\n Or Enter "Eligibility" to check your eligibility for loan')
-    # If user wants to see a FAQ Answer END
-
-    # If user wants inputs any other value START
-    else:
-        if(not active_session or (active_session and not active_session[-1])):
-            resp = 'I am sorry, but I am unable to understand the message. Please select one of the following:\n1. To check Eligibility for Loan, enter 1 or "Eligibility"\n2. To see FAQs, enter 2 or "FAQs"'
-            return sendMessage(resp)
-        else:
-            last_ques = active_session[-3]
-            for i in range(len(eligibilityQuestionIds)):
-                if(last_ques == eligibilityQuestionIds[i]['id']):
-                    validInput = checkIfValueIsAcceptable(message, eligibilityQuestionIds[i])
-                    if(not validInput['resp']):
-                        resp = eligibilityQuestionIds[i]['correction_prompt']
-                        return sendMessage(resp)
-                    else:
-                        c_message = message
-                        if('correct' in validInput):
-                            c_message = validInput['correct']
-                        nextId = None
-                        if(i < len(eligibilityQuestionIds)-1):
-                            nextId = eligibilityQuestionIds[i+1]['id']
-                        else:
-                            nextId = "verifyMessage"
-                        updateUserResponses(conn, c_message, active_session[-2], eligibilityQuestionIds[i])
-                        nextQues = getNextMessage(conn, nextId, active_session)
-                        return sendMessage(nextQues)
-    # If user wants inputs any other value END
-    return 'I am sorry, but I am unable to understand the message. Please select one of the following:\n1. To check Eligibility for Loan, enter 1 or "Eligibility"\n2. To see FAQs, enter 2 or "FAQs"'
-    
 # Main Function to run the server
 if __name__ == '__main__':
     app.run(host='0.0.0.0', debug=True, port=5001)
