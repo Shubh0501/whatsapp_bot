@@ -1,3 +1,6 @@
 flask
 twilio
 psycopg2
+dotenv
+google
+google-cloud-dialogflow-cx
